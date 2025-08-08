@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Rails & Loads — Prototype</title>
+<style>
+  :root{--bg:#0f1724;--panel:#0b1220;--accent:#2b9bff;--ok:#0fb07a}
+  html,body{height:100%;margin:0;font-family:Inter, system-ui, Arial;background:linear-gradient(180deg,#071023 0%, #07162a 60%);color:#e6eef8}
+  .app{display:flex;height:100vh;gap:12px;padding:12px;box-sizing:border-box}
+  .left{width:860px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.06));border-radius:8px;padding:12px;box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+  .right{flex:1;min-width:260px;background:var(--panel);border-radius:8px;padding:12px;box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+  h1{margin:0;font-size:18px}
+  #canvas{background:#8fb8c8;border-radius:6px;display:block;margin-top:8px}
+  .toolbar{display:flex;gap:8px;margin-top:8px}
+  .btn{background:rgba(255,255,255,0.06);padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.03);cursor:pointer;color:inherit}
+  .btn.active{outline:2px solid rgba(255,255,255,0.06);box-shadow:inset 0 -2px rgba(0,0,0,0.2)}
+  .small{font-size:12px;padding:6px 8px}
+  .stat{display:flex;align-items:center;justify-content:space-between;padding:8px;background:rgba(255,255,255,0.02);border-radius:6px;margin-bottom:8px}
+  label{display:block;font-size:12px;margin-bottom:6px}
+  .muted{color:#9fb0c1;font-size:13px}
+  .legend{display:flex;gap:8px;flex-wrap:wrap}
+  .legend div{display:flex;gap:6px;align-items:center}
+  .dot{width:14px;height:14px;border-radius:2px}
+  .dot.track{background:#333}
+  .dot.pax{background:#3aa0ff}
+  .dot.cargo{background:#ff9b3a}
+  .controls{display:grid;gap:8px}
+  .credits{font-size:12px;color:#9fb0c1}
+  .hint{font-size:13px;color:#cfe6ff;padding:8px;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);border-radius:6px}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="left">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h1>Rails & Loads — Prototype</h1>
+      <div class="muted">Grid demo • Single-file HTML</div>
+    </div>
+
+    <canvas id="canvas" width="800" height="640"></canvas>
+
+    <div class="toolbar">
+      <button class="btn active" id="tool-track">Lay Track</button>
+      <button class="btn" id="tool-del">Remove</button>
+      <button class="btn" id="tool-pax">Passenger Station</button>
+      <button class="btn" id="tool-cargo">Cargo Station</button>
+      <button class="btn" id="spawn-train">Add Train</button>
+      <button class="btn" id="auto-sim">Toggle Auto</button>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <div class="stat" style="flex:1"><div>Money</div><div id="money">$500</div></div>
+      <div class="stat" style="width:160px"><div>Time</div><div id="time">0</div></div>
+    </div>
+
+  </div>
+  <div class="right">
+    <div class="controls">
+      <div class="stat"><div>Tool</div><div id="cur-tool">Track</div></div>
+      <div class="stat"><div>Selected Train</div><div id="sel-train">—</div></div>
+      <div class="stat"><div>Active Contracts</div><div id="contracts">0</div></div>
+      <div style="padding:8px;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);border-radius:6px">
+        <div class="legend">
+          <div><span class="dot track"></span><span class="muted">Track</span></div>
+          <div><span class="dot pax"></span><span class="muted">Passenger Station</span></div>
+          <div><span class="dot cargo"></span><span class="muted">Cargo Station</span></div>
+        </div>
+      </div>
+
+      <div class="hint">Controls:<br>- Left-click grid to place according to tool.<br>- Right-click to remove (partial refund).<br>- Click train to set its route by clicking destination station.<br>- Mixed trains pick matching cargo or passengers automatically.</div>
+
+      <div class="credits">Save this file as <code>rails_and_loads.html</code>. To upload to GitHub: create a repo and add this file (or use "Add file → Upload files" on GitHub web UI). Open locally to play.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Rails & Loads — compact prototype JS
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const GRIDW = 20, GRIDH = 16; // 20x16 grid
+const TILE = 40;
+canvas.width = GRIDW * TILE; canvas.height = GRIDH * TILE;
+
+// Game state
+let money = 500;
+let timeTick = 0;
+let autoSim = false;
+
+const Tool = {TRACK:'track', DEL:'del', PAX:'pax', CARGO:'cargo'};
+let curTool = Tool.TRACK;
+
+const grid = Array.from({length:GRIDH},()=>Array.from({length:GRIDW},()=>({track:false, station:null})));
+const trains = []; // {id,x,y,type,route:[],pos,progress,speed,load}
+let selectedTrain = null;
+let mouseDown = false;
+let contracts = [];
+
+const PAX_FARE = 5;
+const CARGO_PAY = {coal:120, grain:80, lumber:90};
+const stationsList = [];
+
+function setMoney(n){ money = Math.round(n); document.getElementById('money').innerText = `$${money}`; }
+function setTime(n){ timeTick = n; document.getElementById('time').innerText = `${timeTick}`; }
+function addContract(c){ contracts.push(c); document.getElementById('contracts').innerText = contracts.length; }
+
+// helpers
+function gridFromPixel(px,py){ return {gx: Math.floor(px/TILE), gy: Math.floor(py/TILE)}; }
+function inGrid(gx,gy){ return gx>=0 && gx<GRIDW && gy>=0 && gy<GRIDH; }
+
+// build tools
+canvas.addEventListener('contextmenu',e=>{ e.preventDefault(); handleRightClick(e); });
+canvas.addEventListener('mousedown',e=>{ if(e.button===0){ mouseDown=true; handleLeft(e); } });
+canvas.addEventListener('mouseup',e=>{ mouseDown=false; });
+canvas.addEventListener('mousemove',e=>{ if(mouseDown && curTool===Tool.TRACK) handleLeft(e); });
+
+function handleLeft(e){ const rect=canvas.getBoundingClientRect(); const mx=e.clientX-rect.left, my=e.clientY-rect.top; const {gx,gy}=gridFromPixel(mx,my);
+  if(!inGrid(gx,gy)) return;
+  if(curTool===Tool.TRACK){ if(!grid[gy][gx].track && money>=6){ grid[gy][gx].track=true; setMoney(money-6); } }
+  else if(curTool===Tool.DEL){ if(grid[gy][gx].track){ grid[gy][gx].track=false; setMoney(money+3);} grid[gy][gx].station=null; }
+  else if(curTool===Tool.PAX){ if(grid[gy][gx].track && !grid[gy][gx].station && money>=50){ grid[gy][gx].station={type:'pax',name:`City ${stationsList.length+1}`}; stationsList.push({gx,gy,type:'pax'}); setMoney(money-50);} }
+  else if(curTool===Tool.CARGO){ if(grid[gy][gx].track && !grid[gy][gx].station && money>=60){ const types=['coal','grain','lumber']; const t=types[stationsList.length%3]; grid[gy][gx].station={type:'cargo',cargoType:t,name:`${t.toUpperCase()} Hub ${stationsList.length+1}`}; stationsList.push({gx,gy,type:'cargo',cargoType:t}); setMoney(money-60);} }
+  // select train
+  const t = getTrainAt(gx,gy);
+  if(t){ selectedTrain = t; document.getElementById('sel-train').innerText = `#${t.id} (${t.type})`; }
+}
+
+function handleRightClick(e){ const rect=canvas.getBoundingClientRect(); const mx=e.clientX-rect.left, my=e.clientY-rect.top; const {gx,gy}=gridFromPixel(mx,my);
+  if(!inGrid(gx,gy)) return;
+  if(grid[gy][gx].station){ grid[gy][gx].station=null; setMoney(money+20); }
+  else if(grid[gy][gx].track){ grid[gy][gx].track=false; setMoney(money+3); }
+}
+
+// UI buttons
+document.getElementById('tool-track').onclick=()=>setTool(Tool.TRACK);
+document.getElementById('tool-del').onclick=()=>setTool(Tool.DEL);
+document.getElementById('tool-pax').onclick=()=>setTool(Tool.PAX);
+document.getElementById('tool-cargo').onclick=()=>setTool(Tool.CARGO);
+function setTool(t){ curTool=t; document.getElementById('cur-tool').innerText = ({track:'Track',del:'Remove',pax:'Passenger Station',cargo:'Cargo Station'})[t]; document.querySelectorAll('.btn').forEach(b=>b.classList.remove('active'));
+  if(t===Tool.TRACK) document.getElementById('tool-track').classList.add('active');
+  if(t===Tool.DEL) document.getElementById('tool-del').classList.add('active');
+  if(t===Tool.PAX) document.getElementById('tool-pax').classList.add('active');
+  if(t===Tool.CARGO) document.getElementById('tool-cargo').classList.add('active');
+}
+
+// trains
+let trainIdCounter=1;
+document.getElementById('spawn-train').onclick=()=>spawnTrain();
+function spawnTrain(){ // spawn near first track tile
+  let found=false; for(let y=0;y<GRIDH && !found;y++)for(let x=0;x<GRIDW && !found;x++) if(grid[y][x].track){ const type = (trains.length%2===0)?'passenger':'cargo'; const t={id:trainIdCounter++,gx:x,gy:y,type,route:[],pos:{x:x+0.5,y:y+0.5},speed:0.02+Math.random()*0.04,progress:0,load:null}; trains.push(t); found=true; setMoney(money-80);} }
+
+function getTrainAt(gx,gy){ return trains.find(t=>Math.floor(t.pos.x)===gx && Math.floor(t.pos.y)===gy); }
+
+// click to set route destination when train selected
+canvas.addEventListener('click',e=>{ const rect=canvas.getBoundingClientRect(); const mx=e.clientX-rect.left, my=e.clientY-rect.top; const {gx,gy}=gridFromPixel(mx,my);
+  if(selectedTrain){ // if clicked station -> route
+    if(inGrid(gx,gy) && grid[gy][gx].station){ // compute path
+      const path = findPath({gx:selectedTrain.gx,gy:selectedTrain.gy},{gx,gy});
+      if(path){ selectedTrain.route=path; selectedTrain.routeDest={gx,gy}; }
+    }
+  }
+});
+
+// simple BFS pathfinder on track tiles
+function findPath(start,end){ const q=[start]; const key=(p)=>`${p.gx},${p.gy}`; const came={[key(start)]:null}; const dirs=[{dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}]; while(q.length){ const cur=q.shift(); if(cur.gx===end.gx && cur.gy===end.gy) break; for(const d of dirs){ const nx=cur.gx+d.dx, ny=cur.gy+d.dy; if(!inGrid(nx,ny)) continue; if(!grid[ny][nx].track && !(nx===end.gx && ny===end.gy && grid[ny][nx].station)) continue; const k=key({gx:nx,gy:ny}); if(k in came) continue; came[k]=cur; q.push({gx:nx,gy:ny}); } }
+  const endKey=key(end); if(!(endKey in came)) return null; const path=[]; let cur=end; while(cur){ path.push(cur); cur=came[key(cur)]; }
+  path.reverse(); return path;
+}
+
+// spawn passengers & cargo at intervals
+let spawnTimer=0;
+function gameTick(dt){ // dt ticks (arbitrary)
+  // move trains
+  for(const t of trains){ if(t.route && t.route.length>0){ // follow route nodes
+      // move toward next node
+      const target = t.route[0]; const tx = target.gx+0.5, ty = target.gy+0.5; const dx=tx-t.pos.x, dy=ty-t.pos.y; const dist=Math.hypot(dx,dy);
+      if(dist<0.06){ // reached node
+        t.pos.x=tx; t.pos.y=ty; t.gx=target.gx; t.gy=target.gy; t.route.shift();
+        // arrived at station?
+        if(grid[t.gy][t.gx].station){ const s=grid[t.gy][t.gx].station; if(t.type==='passenger' && s.type==='pax'){ // drop/pick
+            let riders = Math.floor(1+Math.random()*6); setMoney(money + riders*PAX_FARE); }
+          if(t.type==='cargo' && s.type==='cargo'){ // deliver cargo
+            let pay = CARGO_PAY[s.cargoType] || 60; setMoney(money + pay); }
+        }
+      } else { // step
+        const vx = (dx/dist) * t.speed * dt; const vy = (dy/dist) * t.speed * dt; t.pos.x += vx; t.pos.y += vy; }
+    } }
+
+  // spawn
+  spawnTimer += dt;
+  if(spawnTimer>80){ spawnTimer=0; // spawn passenger demand at random pax stations
+    for(let i=0;i<3;i++){ const s = stationsList.filter(s=>s.type==='pax')[Math.floor(Math.random()*Math.max(1,stationsList.filter(s=>s.type==='pax').length))]; if(s){ /* increase demand - not tracked per station in this simple version */ } }
+  }
+}
+
+// rendering
+function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height);
+  // draw grid
+  for(let y=0;y<GRIDH;y++) for(let x=0;x<GRIDW;x++){
+    ctx.fillStyle = '#9dbfcf'; ctx.fillRect(x*TILE+1,y*TILE+1,TILE-2,TILE-2);
+    if(grid[y][x].track){ ctx.fillStyle = '#333'; ctx.fillRect(x*TILE+TILE*0.35,y*TILE+TILE*0.42,TILE*0.3,TILE*0.16); // simple tie
+      // rails
+      ctx.strokeStyle='#222'; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(x*TILE+4,y*TILE+TILE-6); ctx.lineTo(x*TILE+TILE-4,y*TILE+6); ctx.stroke(); }
+    if(grid[y][x].station){ const s=grid[y][x].station; if(s.type==='pax'){ ctx.fillStyle='#3aa0ff'; ctx.fillRect(x*TILE+6,y*TILE+6, TIL E-12?0: T IL E ); } }
+  }
+  // custom station draw (separate pass to be clearer)
+  for(let y=0;y<GRIDH;y++) for(let x=0;x<GRIDW;x++){ const st = grid[y][x].station; if(st){ if(st.type==='pax'){ ctx.fillStyle='#3aa0ff'; ctx.fillRect(x*TILE+6,y*TILE+6,TILE-12,TILE-12); ctx.fillStyle='white'; ctx.font='10px sans-serif'; ctx.fillText(st.name,x*TILE+8,y*TILE+18); } else if(st.type==='cargo'){ ctx.fillStyle='#ff9b3a'; ctx.fillRect(x*TILE+6,y*TILE+6,TILE-12,TILE-12); ctx.fillStyle='rgba(0,0,0,0.9)'; ctx.font='10px sans-serif'; ctx.fillText(st.name,x*TILE+8,y*TILE+18); } } }
+
+  // draw trains
+  for(const t of trains){ const px = t.pos.x * TILE, py = t.pos.y * TILE; ctx.save(); ctx.translate(px,py);
+    ctx.fillStyle = t.type==='passenger' ? '#1e88ff' : '#ff8a3d'; ctx.beginPath(); ctx.roundRect(-TILE*0.28,-TILE*0.16, TILE*0.56, TILE*0.32,4); ctx.fill(); ctx.restore(); }
+
+  // HUD overlays
+}
+
+// polyfill roundRect
+CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){ if(typeof r==='undefined') r=4; this.beginPath(); this.moveTo(x+r,y); this.arcTo(x+w,y,x+w,y+h,r); this.arcTo(x+w,y+h,x,y+h,r); this.arcTo(x,y+h,x,y,r); this.arcTo(x,y,x+w,y,r); this.closePath(); this.fill(); };
+
+// main loop
+let last=performance.now(); function loop(now){ const dt = Math.min(40, now-last); last=now; if(autoSim) gameTick(dt*0.12); draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+// toggle auto
+document.getElementById('auto-sim').onclick=()=>{ autoSim=!autoSim; document.getElementById('auto-sim').classList.toggle('active'); };
+
+// assist: initial seed tracks
+(function seed(){ for(let y=7;y<=8;y++) for(let x=2;x<18;x++){ grid[y][x].track=true; } grid[7][3].station={type:'pax',name:'City A'}; grid[7][15].station={type:'pax',name:'City B'}; setMoney(money); })();
+
+// simple save instruction (user can copy file content from canvas)
+</script>
+</body>
+</html>
