@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Tiny Trains — Single File Game (index.html)</title>
+  <style>
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    #gameWrap{display:flex;flex-direction:column;align-items:center;padding:12px;background:#f3f6f9;height:100%;box-sizing:border-box}
+    canvas{background:linear-gradient(#87CEEB,#CDEBF8);border:6px solid #333;border-radius:6px}
+    #hud{display:flex;gap:12px;align-items:center;margin:8px 0}
+    button{padding:6px 10px;border-radius:6px;border:1px solid #666;background:white;cursor:pointer}
+    .panel{background:white;padding:8px;border-radius:6px;border:1px solid #ddd;box-shadow:0 2px 6px rgba(0,0,0,0.05)}
+    #instructions{max-width:800px;margin-top:12px;color:#333}
+    .station{display:inline-block;padding:3px 6px;border-radius:4px;margin-right:6px}
+  </style>
+</head>
+<body>
+  <div id="gameWrap">
+    <h2>Tiny Trains</h2>
+    <div id="hud">
+      <div class="panel">Score: <span id="score">0</span></div>
+      <div class="panel">Cargo: <span id="cargo">—</span></div>
+      <div class="panel">Time Left: <span id="time">120</span>s</div>
+      <button id="reset">Restart</button>
+      <button id="pause">Pause</button>
+    </div>
+
+    <canvas id="c" width="900" height="520"></canvas>
+
+    <div id="instructions" class="panel">
+      <strong>How to play</strong>: Use <em>arrow keys</em> to steer your train on the track. Pick up cargo (yellow boxes) by running over them, then deliver to the matching colored station.
+      Deliveries earn points. Game lasts 2 minutes. <br/>
+      <div style="margin-top:8px"><span class="station" style="background:#ffb3b3">Red</span><span class="station" style="background:#b3ffd9">Green</span><span class="station" style="background:#ffd6a6">Orange</span></div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  const scoreEl = document.getElementById('score');
+  const cargoEl = document.getElementById('cargo');
+  const timeEl = document.getElementById('time');
+  const resetBtn = document.getElementById('reset');
+  const pauseBtn = document.getElementById('pause');
+
+  let score = 0;
+  let timeLeft = 120; // seconds
+  let lastTick = performance.now();
+  let paused = false;
+
+  // Simple grid of tracks (horizontal rails every 80px)
+  const tracks = [];
+  for (let y=80; y<=H-80; y+=80) tracks.push(y);
+
+  // Stations located along tracks
+  const stations = [
+    {x:80,y:tracks[0],color:'#ff8a8a',type:'red'},
+    {x:W-160,y:tracks[0],color:'#ffd090',type:'orange'},
+    {x:W/2,y:tracks[2],color:'#b3ffd9',type:'green'}
+  ];
+
+  // Cargo types that spawn on tracks
+  const cargoTypes = [
+    {color:'#ff8a8a',type:'red',value:100},
+    {color:'#ffd090',type:'orange',value:80},
+    {color:'#b3ffd9',type:'green',value:60}
+  ];
+
+  let cargoItems = [];
+
+  // Player train
+  const train = {
+    x:100, y:tracks[0], w:36, h:20, dir:0, speed:0, maxSpeed:2.6, angle:0,
+    carrying: null
+  };
+
+  // Input
+  const keys = {};
+  window.addEventListener('keydown', e=>{ keys[e.key] = true; e.preventDefault(); });
+  window.addEventListener('keyup', e=>{ keys[e.key] = false; });
+
+  resetBtn.onclick = startNewGame;
+  pauseBtn.onclick = ()=>{ paused = !paused; pauseBtn.textContent = paused? 'Resume':'Pause'; };
+
+  function startNewGame(){
+    score = 0; timeLeft = 120; cargoItems = []; train.x = 100; train.y = tracks[0]; train.carrying = null; paused = false; pauseBtn.textContent='Pause';
+    spawnCargo(6);
+  }
+
+  function spawnCargo(n=1){
+    for(let i=0;i<n;i++){
+      const ct = cargoTypes[Math.floor(Math.random()*cargoTypes.length)];
+      const trackY = tracks[Math.floor(Math.random()*tracks.length)];
+      const x = 160 + Math.random()*(W-320);
+      cargoItems.push({x, y:trackY, w:18, h:14, color:ct.color, type:ct.type, value:ct.value});
+    }
+  }
+
+  function update(dt){
+    if(paused) return;
+    // simple train physics
+    if (keys.ArrowUp || keys['w']) train.speed += 0.04;
+    if (keys.ArrowDown || keys['s']) train.speed -= 0.06;
+    train.speed = Math.max(-1, Math.min(train.maxSpeed, train.speed * 0.995));
+
+    // left/right to change track index (snap to nearest track when moving)
+    if ((keys.ArrowLeft || keys['a'])) train.x -= Math.max(1, Math.abs(train.speed)*4);
+    if ((keys.ArrowRight || keys['d'])) train.x += Math.max(1, Math.abs(train.speed)*4);
+
+    // move along track depending on speed
+    train.x += train.speed * 18 * dt;
+
+    // keep on canvas
+    train.x = Math.max(30, Math.min(W-30, train.x));
+
+    // Snap to nearest track when vertical movement not pressed
+    let closest = tracks.reduce((acc,y)=> Math.abs(train.y-y) < Math.abs(train.y-acc)? y:acc, tracks[0]);
+    // Use up/down keys to move between tracks
+    if (keys['q']){} // reserved
+    if (keys['ArrowUp'] && Math.abs(train.y-closest) > 1) train.y -= 2; // small vertical control
+    if (keys['ArrowDown'] && Math.abs(train.y-closest) > 1) train.y += 2;
+    // Otherwise gently snap to nearest track
+    if (!keys.ArrowUp && !keys.ArrowDown && !keys.w && !keys.s){
+      train.y += (closest - train.y) * 0.12;
+    }
+
+    // pickup cargo if near and not carrying
+    if (!train.carrying){
+      for (let i=cargoItems.length-1;i>=0;i--){
+        const c = cargoItems[i];
+        if (Math.abs(train.x - c.x) < 28 && Math.abs(train.y - c.y) < 22){
+          train.carrying = c; cargoItems.splice(i,1); break;
+        }
+      }
+    }
+
+    // deliver if carrying and at matching station
+    if (train.carrying){
+      for (let s of stations){
+        if (Math.abs(train.x - s.x) < 36 && Math.abs(train.y - s.y) < 26 && train.carrying.type === s.type){
+          score += train.carrying.value; train.carrying = null; spawnCargo(1); break;
+        }
+      }
+    }
+
+    // countdown
+    timeLeft -= dt;
+    if (timeLeft <= 0){ timeLeft = 0; paused = true; }
+  }
+
+  function draw(){
+    // background
+    ctx.clearRect(0,0,W,H);
+
+    // grassy ground
+    ctx.fillStyle = '#bfeab8';
+    ctx.fillRect(0,H-100,W,100);
+
+    // draw tracks
+    for (let y of tracks){
+      // sleepers
+      for (let i=0;i<W;i+=22){ ctx.fillStyle = '#5a4030'; ctx.fillRect(i,y-3,14,6); }
+      // rails
+      ctx.fillStyle = '#444'; ctx.fillRect(0,y-9,W,4); ctx.fillRect(0,y+5,W,4);
+    }
+
+    // draw stations
+    for (let s of stations){
+      ctx.fillStyle = s.color;
+      ctx.fillRect(s.x-42, s.y-30, 84, 60);
+      ctx.fillStyle = '#333'; ctx.font='12px sans-serif'; ctx.textAlign='center'; ctx.fillText((s.type+' station').toUpperCase(), s.x, s.y+40);
+    }
+
+    // draw cargo
+    for (let c of cargoItems){
+      ctx.fillStyle = c.color; ctx.fillRect(c.x-9,c.y-12,c.w,c.h);
+      ctx.strokeStyle = '#8a6b6b'; ctx.strokeRect(c.x-9,c.y-12,c.w,c.h);
+    }
+
+    // draw train (locomotive)
+    ctx.save();
+    ctx.translate(train.x, train.y);
+    // engine body
+    ctx.fillStyle = '#222'; ctx.fillRect(-20,-12,40,24);
+    ctx.fillStyle = '#666'; ctx.fillRect(-14,-10,12,20);
+    // wheels
+    for (let wx=-12; wx<=12; wx+=12){ ctx.beginPath(); ctx.arc(wx,14,6,0,Math.PI*2); ctx.fillStyle='#111'; ctx.fill(); }
+    // cargo on train
+    if (train.carrying){ ctx.fillStyle = train.carrying.color; ctx.fillRect(24,-10,20,16); ctx.strokeStyle='#5a4030'; ctx.strokeRect(24,-10,20,16); }
+    ctx.restore();
+
+    // HUD overlay
+    scoreEl.textContent = score;
+    cargoEl.textContent = train.carrying ? train.carrying.type : '—';
+    timeEl.textContent = Math.ceil(timeLeft);
+
+    // if game over
+    if (paused && timeLeft===0){
+      ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,0,W,H);
+      ctx.fillStyle='white'; ctx.font='32px sans-serif'; ctx.textAlign='center'; ctx.fillText('Time! Final score: '+score, W/2, H/2 - 10);
+      ctx.font='16px sans-serif'; ctx.fillText('Press Restart to play again', W/2, H/2 + 24);
+    }
+  }
+
+  // Simple loop
+  function frame(t){
+    const dt = Math.min(0.05, (t - lastTick)/1000);
+    lastTick = t;
+    if (!paused) update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // Spawn some initial cargo
+  spawnCargo(8);
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
